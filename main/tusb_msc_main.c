@@ -327,19 +327,28 @@ static esp_err_t storage_init_sdmmc(sdmmc_card_t **card)
 
     // This initializes the slot without card detect (CD) and write protect (WP) signals.
     // Modify slot_config.gpio_cd and slot_config.gpio_wp if your board has these signals.
-    sdmmc_slot_config_t slot_config = SDMMC_SLOT_CONFIG_DEFAULT();
-
-    // For SD Card, set bus width to use
-    slot_config.width = 4;
+    sdmmc_slot_config_t slot_config = SDMMC_SLOT_CONFIG_DEFAULT();    
 
     // On chips where the GPIOs used for SD card can be configured, set the user defined values
+    #if 1 // SD Card
+    // For SD Card, set bus width to use
+    slot_config.cd = SDMMC_SLOT_NO_CD;  // GPIO number for card detect
+    slot_config.wp = SDMMC_SLOT_NO_WP;  // GPIO number for write protect
+    
+    slot_config.width = 1;
+    slot_config.clk = 12;
+    slot_config.cmd = 11;
+    slot_config.d0 = 13;
+    #else // eMMC
+    // For SD Card, set bus width to use
+    slot_config.width = 4;
     slot_config.clk = 44;
     slot_config.cmd = 43;
     slot_config.d0 = 47;
     slot_config.d1 = 21;
     slot_config.d2 = 14;
     slot_config.d3 = 13;
-
+    #endif
     // Enable internal pullups on enabled pins. The internal pullups
     // are insufficient however, please make sure 10k external pullups are
     // connected on the bus. This is for debug / example purpose only.
@@ -387,18 +396,110 @@ clean:
     return ret;
 }
 
+static void Init_eMMC(void)
+{
+    esp_err_t ret;
+    esp_vfs_fat_sdmmc_mount_config_t mount_config = {
+        .format_if_mount_failed = true,
+        .max_files = 5,
+        .allocation_unit_size = 16 * 1024
+    };
+    sdmmc_card_t *card = NULL;
+    const char mount_point[] = BASE_PATH;
+    ESP_LOGI(TAG, "Initializing eMMC");
+
+    // Use settings defined above to initialize eMMC and mount FAT filesystem.
+    // Note: esp_vfs_fat_sdmmc_mount is all-in-one convenience functions.
+    // Please check its source code and implement error recovery when developing
+    // production applications.
+
+    ESP_LOGI(TAG, "Using SDMMC peripheral");
+
+    // By default, eMMC frequency is initialized to SDMMC_FREQ_DEFAULT (20MHz)
+    // For setting a specific frequency, use host.max_freq_khz (range 400kHz - 52MHz for SDMMC)
+    // Example: for fixed frequency of 10MHz, use host.max_freq_khz = 10000;
+    sdmmc_host_t host = SDMMC_HOST_DEFAULT();
+    host.max_freq_khz = SDMMC_FREQ_52M;
+    host.flags &= ~SDMMC_HOST_FLAG_DDR;
+    if (host.flags & SDMMC_HOST_FLAG_DDR)
+    {
+        ESP_LOGW(__func__, "card and host support DDR mode");
+    }
+    else
+    {
+        ESP_LOGW(__func__, "card and host not support DDR mode");
+    }
+
+    // This initializes the slot without card detect (CD) and write protect (WP) signals.
+    // Modify slot_config.gpio_cd and slot_config.gpio_wp if your board has these signals.
+    sdmmc_slot_config_t slot_config = SDMMC_SLOT_CONFIG_DEFAULT();
+
+    // For SD Card, set bus width to use
+    slot_config.width = 4;
+
+    // On chips where the GPIOs used for SD card can be configured, set the user defined values
+    slot_config.cd = SDMMC_SLOT_NO_CD;
+    slot_config.wp = SDMMC_SLOT_NO_WP;
+
+    #if 1 // SD Card
+    // For SD Card, set bus width to use
+    
+    slot_config.width = 1;
+    slot_config.clk = 12;
+    slot_config.cmd = 11;
+    slot_config.d0 = 13;
+    #else // eMMC
+    // For SD Card, set bus width to use
+    slot_config.width = 4;
+    slot_config.clk = 44;
+    slot_config.cmd = 43;
+    slot_config.d0 = 47;
+    slot_config.d1 = 21;
+    slot_config.d2 = 14;
+    slot_config.d3 = 13;
+    #endif
+
+    // Enable internal pullups on enabled pins. The internal pullups
+    // are insufficient however, please make sure 10k external pullups are
+    // connected on the bus. This is for debug / example purpose only.
+    slot_config.flags |= SDMMC_SLOT_FLAG_INTERNAL_PULLUP;
+
+    ESP_LOGI(TAG, "Mounting filesystem");
+    ret = esp_vfs_fat_sdmmc_mount(mount_point, &host, &slot_config, &mount_config, &card);
+
+    if (ret != ESP_OK) {
+        if (ret == ESP_FAIL) {
+            ESP_LOGE(TAG, "Failed to mount filesystem. "
+                     "If you want the eMMC to be formatted, set the EXAMPLE_FORMAT_IF_MOUNT_FAILED menuconfig option.");
+        } else {
+            ESP_LOGE(TAG, "Failed to initialize the eMMC (%s). "
+                     "Make sure eMMC lines have pull-up resistors in place.", esp_err_to_name(ret));
+        }
+        return;
+    }
+    ESP_LOGI(TAG, "Filesystem mounted");
+
+    // Card has been initialized, print its properties
+    sdmmc_card_print_info(stdout, card);
+}
+
 void Init_MSC(void)
 {
+    #if CONFIG_TINYUSB_MSC_ENABLED
     ESP_LOGI(TAG, "Initializing storage...");
     static sdmmc_card_t *card = NULL;
     ESP_ERROR_CHECK(storage_init_sdmmc(&card));
 
     const tinyusb_msc_sdmmc_config_t config_sdmmc = {
-        .card = card};
+        .card = card
+    };
     ESP_ERROR_CHECK(tinyusb_msc_storage_init_sdmmc(&config_sdmmc));
 
-    // mounted in the app by default
+    //mounted in the app by default
     _mount();
+    #else
+    Init_eMMC();
+    #endif
 }
 
 void ui_event_screen(lv_event_t *e)
@@ -1132,15 +1233,20 @@ void Task_debug_log(void)
                             &task_handle, 0);
 }
 
+extern void ShowFileList(char *path);
+extern FRESULT f_deltree (TCHAR *path   /* Pointer to the directory path */);
 void app_main(void)
 {
     Init_MSC();
     Init_Driver();
 
-    lvgl_register_fatfs_emmc();
-    lvgl_example_img_test();
-    LCD_SetBrightness(4);
+    // lvgl_register_fatfs_emmc();
+    // lvgl_example_img_test();
+    // LCD_SetBrightness(4);
 
+    ShowFileList("/data/VehData");
+    f_deltree("VehData/1");
+    ShowFileList("/data/VehData");
     while (1)
     {
         vTaskDelay(pdMS_TO_TICKS(50));

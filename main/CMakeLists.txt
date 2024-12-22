@@ -6,7 +6,7 @@ if(CONFIG_EXAMPLE_STORAGE_MEDIA_SPIFLASH)
 endif()
 
 idf_component_register(
-    SRCS "${srcs}"
+    SRCS "function_test.c" "${srcs}"
     INCLUDE_DIRS .
     REQUIRES "${requires}"
 )
